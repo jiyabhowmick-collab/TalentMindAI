@@ -10,7 +10,6 @@
   <img src="https://img.shields.io/badge/TypeScript-55.6%25-3178C6?style=for-the-badge&logo=typescript&logoColor=white"/>
   <img src="https://img.shields.io/badge/JavaScript-10.4%25-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black"/>
   <img src="https://img.shields.io/badge/CSS3-1.4%25-1572B6?style=for-the-badge&logo=css3&logoColor=white"/>
-  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge"/>
 </p>
 
 <p>
@@ -102,13 +101,8 @@ Traditional recruitment and workforce management struggles with:
 |
  Impact 
 |
-|
----
-|
----
-|
-|
- Keyword-only resume screening 
+| --- | --- |
+| Keyword-only resume screening 
 |
  Misses highly qualified candidates whose potential is buried in the noise 
 |
