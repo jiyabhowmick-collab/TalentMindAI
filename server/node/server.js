@@ -98,6 +98,18 @@ app.get("/api/results/:jobId", async (req, res) => {
   }
 });
 
+// Poll pipeline progress (step 1–5) for granular frontend updates
+app.get("/api/status/:jobId", async (req, res) => {
+  try {
+    const response = await axios.get(`${PYTHON_URL}/status/${req.params.jobId}`);
+    res.json(response.data);
+  } catch (err) {
+    const status = err.response?.status || 404;
+    console.error(`[status] ERROR ${status} for job ${req.params.jobId}:`, err.message);
+    res.status(status).json({ error: "Not found" });
+  }
+});
+
 // Stream CSV export for a given job ID and tier (10 / 50 / 100)
 app.get("/api/export/:jobId/:tier", async (req, res) => {
   try {

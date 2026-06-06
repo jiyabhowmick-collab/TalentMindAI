@@ -2,8 +2,7 @@
 
 import React, { useState } from "react";
 import { Download, Loader2 } from "lucide-react";
-
-const API_BASE = "http://localhost:4000";
+import { exportCSV } from "@/services/api";
 
 interface ExportButtonsProps {
   jobId: string;
@@ -18,20 +17,10 @@ const TIERS = [
 export function ExportButtons({ jobId }: ExportButtonsProps) {
   const [loading, setLoading] = useState<number | null>(null);
 
-  const handleDownload = async (tier: number) => {
+  const handleDownload = async (tier: 10 | 50 | 100) => {
     setLoading(tier);
     try {
-      const res = await fetch(`${API_BASE}/api/export/${jobId}/${tier}`);
-      if (!res.ok) throw new Error("Download failed");
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `talent-mind_top-${tier}_${jobId.slice(0, 8)}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
+      await exportCSV(jobId, tier);
     } catch (err) {
       console.error("Export error:", err);
       alert("Failed to download CSV. Make sure the server is running.");

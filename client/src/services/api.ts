@@ -1,8 +1,6 @@
 /**
- * services/api.ts
- *
- * Centralised API communication layer.
- * All requests go to the Express backend (from NEXT_PUBLIC_API_URL).
+ * services/api.ts — Centralised API communication layer.
+ * All requests go to the Express backend (NEXT_PUBLIC_API_URL).
  * Uses credentials: "include" for HTTP-only cookie auth.
  */
 
@@ -18,49 +16,38 @@ export interface AuthUser {
   email: string;
 }
 
-export interface UploadResponse {
-  job_id: string;
-  total_candidates: number;
-  returned: number;
-  message: string;
-}
-
 export interface CandidateResult {
   _rank: number;
   _score: number;
   _semantic_score: number;
   _behavioral_score: number;
   _reasoning: string;
-  name?: string;           // from profile.anonymized_name
-  candidate_id?: string;   // always present
-  current_title?: string;  // flat normalized field
+  name?: string;
+  candidate_id?: string;
+  current_title?: string;
   years_experience?: number;
   [key: string]: unknown;
 }
 
 export interface ResultsResponse {
   job_id: string;
-  created_at: string;
+  created_at?: string;
   total_candidates: number;
   returned: number;
   results: CandidateResult[];
 }
 
-export type ProgressStatus =
-  | "uploading"
-  | "processing"
-  | "ranking"
-  | "done"
-  | "error";
+/** 0=uploading  1=processing  2=ranking  3=done */
+export type RankStep = 0 | 1 | 2 | 3;
 
 /* ------------------------------------------------------------------ */
-/*  Auth functions                                                     */
+/*  Auth                                                               */
 /* ------------------------------------------------------------------ */
 
 export async function register(
   name: string,
   email: string,
-  password: string
+  password: string,
 ): Promise<{ success: boolean; token: string; user: AuthUser }> {
   const res = await fetch(`${API_BASE}/api/auth/register`, {
     method: "POST",
@@ -68,12 +55,10 @@ export async function register(
     credentials: "include",
     body: JSON.stringify({ name, email, password }),
   });
-
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "Registration failed" }));
     throw new Error(err.error || `Registration failed (${res.status})`);
   }
-
   const data = await res.json();
   if (data.token) localStorage.setItem("token", data.token);
   return data;
@@ -81,7 +66,7 @@ export async function register(
 
 export async function login(
   email: string,
-  password: string
+  password: string,
 ): Promise<{ success: boolean; token: string; user: AuthUser }> {
   const res = await fetch(`${API_BASE}/api/auth/login`, {
     method: "POST",
@@ -89,12 +74,10 @@ export async function login(
     credentials: "include",
     body: JSON.stringify({ email, password }),
   });
-
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "Login failed" }));
     throw new Error(err.error || `Login failed (${res.status})`);
   }
-
   const data = await res.json();
   if (data.token) localStorage.setItem("token", data.token);
   return data;
@@ -112,39 +95,23 @@ export async function refreshToken(): Promise<void> {
     method: "POST",
     credentials: "include",
   });
-
-  if (!res.ok) {
-    throw new Error("Session expired. Please log in again.");
-  }
+  if (!res.ok) throw new Error("Session expired. Please log in again.");
 }
 
 export async function getMe(): Promise<{ user: AuthUser }> {
-  const res = await fetch(`${API_BASE}/api/auth/me`, {
-    credentials: "include",
-  });
-
-  if (!res.ok) {
-    throw new Error("Not authenticated");
-  }
-
+  const res = await fetch(`${API_BASE}/api/auth/me`, { credentials: "include" });
+  if (!res.ok) throw new Error("Not authenticated");
   return res.json();
 }
 
 /* ------------------------------------------------------------------ */
-/*  Data functions                                                     */
+/*  Auth-aware fetch helper                                            */
 /* ------------------------------------------------------------------ */
 
-/**
- * Wrapper around fetch that auto-retries once with a token refresh
- * if the first attempt returns 401.
- */
 async function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
   const opts: RequestInit = { ...options, credentials: "include" };
-
   let res = await fetch(url, opts);
-
   if (res.status === 401) {
-    // Try refreshing the token
     try {
       await refreshToken();
       res = await fetch(url, opts);
@@ -152,97 +119,136 @@ async function authFetch(url: string, options: RequestInit = {}): Promise<Respon
       throw new Error("Session expired. Please log in again.");
     }
   }
-
   return res;
 }
 
-export async function uploadCandidates(
+/* ------------------------------------------------------------------ */
+/*  PART 2 — Upload + rank with step callbacks                         */
+/* ------------------------------------------------------------------ */
+
+export interface UploadAndRankCallbacks {
+  /** Called each time the step index advances (0→1→2→3) */
+  onStepChange: (step: RankStep) => void;
+  /** Called with total_candidates as soon as upload returns */
+  onTotalCandidates: (total: number) => void;
+  /** Called with the full results array when ranking is done */
+  onComplete: (results: CandidateResult[], total: number, jobId: string) => void;
+  /** Called on any unrecoverable error */
+  onError: (message: string) => void;
+}
+
+/**
+ * Full upload-and-rank flow wired to RankStep callbacks.
+ * Advances steps in sync with real backend responses:
+ *
+ *  Frontend RankStep │ Backend /status step │ What it means
+ *  ──────────────────┼──────────────────────┼──────────────────────────
+ *  0  Uploading      │ (before POST returns) │ File being sent to server
+ *  1  Processing     │ 1–2 (parse+normalise) │ Server processing file
+ *  2  Ranking        │ 3–4 (tfidf+rank)      │ AI ranking in progress
+ *  3  Done           │ 5 / results exist     │ Results ready
+ */
+export async function uploadAndRank(
   file: File,
-  jobDescription: string
-): Promise<UploadResponse> {
-  const form = new FormData();
-  form.append("file", file);
-  form.append("job_description", jobDescription);
-
-  const res = await authFetch(`${API_BASE}/api/upload`, {
-    method: "POST",
-    body: form,
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: "Upload failed" }));
-    throw new Error(err.error || `Upload failed (${res.status})`);
-  }
-
-  return res.json();
-}
-
-export async function pollResults(
-  jobId: string,
-  onProgress: (status: ProgressStatus, data?: ResultsResponse) => void,
-  intervalMs = 2000,
-  maxAttempts = 150
-): Promise<ResultsResponse> {
-  onProgress("processing");
-
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    try {
-      const res = await authFetch(`${API_BASE}/api/results/${jobId}`);
-
-      if (res.status === 404) {
-        onProgress("ranking");
-        await sleep(intervalMs);
-        continue;
-      }
-
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Fetch failed" }));
-        throw new Error(err.error || `Fetch failed (${res.status})`);
-      }
-
-      const data: ResultsResponse = await res.json();
-
-      if (data.results && data.results.length > 0) {
-        // Debug: log first result to verify field names from the API
-        console.log("[pollResults] First result keys:", Object.keys(data.results[0]));
-        console.log("[pollResults] First result sample:", {
-          name: data.results[0].name,
-          candidate_id: data.results[0].candidate_id,
-          current_title: data.results[0].current_title,
-          _rank: data.results[0]._rank,
-          _score: data.results[0]._score,
-          _reasoning: data.results[0]._reasoning,
-        });
-        onProgress("done", data);
-        return data;
-      }
-
-      onProgress("ranking");
-      await sleep(intervalMs);
-    } catch (err: any) {
-      if (attempt > 5) {
-        onProgress("error");
-        throw err;
-      }
-      await sleep(intervalMs);
-    }
-  }
-
-  onProgress("error");
-  throw new Error("Polling timed out waiting for results.");
-}
-
-export async function exportCSV(
-  jobId: string,
-  tier: 10 | 50 | 100
+  jobDescription: string,
+  callbacks: UploadAndRankCallbacks,
 ): Promise<void> {
-  const res = await authFetch(`${API_BASE}/api/export/${jobId}/${tier}`);
+  const { onStepChange, onTotalCandidates, onComplete, onError } = callbacks;
 
+  try {
+    // ── Step 0: uploading (file transfer) ────────────────────────────
+    onStepChange(0);
+
+    const form = new FormData();
+    form.append("file", file);
+    form.append("job_description", jobDescription);
+
+    const uploadRes = await authFetch(`${API_BASE}/api/upload`, {
+      method: "POST",
+      body:   form,
+    });
+    if (!uploadRes.ok) {
+      const err = await uploadRes.json().catch(() => ({ error: "Upload failed" }));
+      throw new Error(err.error || `Upload failed (${uploadRes.status})`);
+    }
+    const { job_id } = await uploadRes.json();
+    // job_id returned immediately; pipeline running in Flask background thread
+
+    // ── Steps 1 + 2: poll /status until backend reaches step 5 ──────
+    const MAX_STATUS_POLLS = 360; // 12 min at 2 s intervals
+    let lastFrontendStep: RankStep = 1;
+    onStepChange(1); // server has the file — show "Processing"
+
+    for (let attempt = 0; attempt < MAX_STATUS_POLLS; attempt++) {
+      await sleep(2000);
+
+      let statusData: {
+        step: number;
+        message: string;
+        total: number;
+        done: boolean;
+        error?: string;
+      };
+
+      try {
+        const statusRes = await authFetch(`${API_BASE}/api/status/${job_id}`);
+        if (!statusRes.ok) continue; // transient error — retry
+        statusData = await statusRes.json();
+      } catch {
+        continue; // network blip — retry
+      }
+
+      // Surface backend error
+      if (statusData.step === -1) {
+        throw new Error(statusData.message || "Pipeline error on server");
+      }
+
+      // Update total candidates as soon as it's known
+      if (statusData.total > 0) {
+        onTotalCandidates(statusData.total);
+      }
+
+      // Map backend step → frontend RankStep
+      // backend 1–2 = Processing, backend 3–4 = Ranking, backend 5 = Done
+      const frontendStep: RankStep =
+        statusData.step <= 2 ? 1 :
+        statusData.step <= 4 ? 2 : 3;
+
+      if (frontendStep > lastFrontendStep) {
+        lastFrontendStep = frontendStep;
+        onStepChange(frontendStep);
+      }
+
+      // Job complete — fetch results
+      if (statusData.done || statusData.step >= 5) {
+        onStepChange(3);
+
+        const resultsRes = await authFetch(`${API_BASE}/api/results/${job_id}`);
+        if (!resultsRes.ok) {
+          throw new Error(`Failed to fetch results (${resultsRes.status})`);
+        }
+        const data: ResultsResponse = await resultsRes.json();
+        onComplete(data.results ?? [], data.total_candidates ?? statusData.total ?? 0, job_id);
+        return;
+      }
+    }
+
+    throw new Error("Ranking timed out after 12 minutes.");
+  } catch (err: unknown) {
+    onError(err instanceof Error ? err.message : "An unexpected error occurred.");
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Export CSV                                                         */
+/* ------------------------------------------------------------------ */
+
+export async function exportCSV(jobId: string, tier: 10 | 50 | 100): Promise<void> {
+  const res = await authFetch(`${API_BASE}/api/export/${jobId}/${tier}`);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: "Export failed" }));
     throw new Error(err.error || `Export failed (${res.status})`);
   }
-
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -259,5 +265,5 @@ export async function exportCSV(
 /* ------------------------------------------------------------------ */
 
 function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }

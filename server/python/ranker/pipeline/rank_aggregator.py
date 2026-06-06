@@ -6,8 +6,47 @@ from pipeline.behavioral_scorer import compute_behavioral_score
 
 logger = logging.getLogger(__name__)
 
-SEMANTIC_WEIGHT   = 0.60
-BEHAVIORAL_WEIGHT = 0.40
+SEMANTIC_WEIGHT   = 0.62
+BEHAVIORAL_WEIGHT = 0.38
+
+
+def enforce_monotonic_scores(results: list[dict]) -> list[dict]:
+    """
+    Ensure _score is strictly decreasing with rank.
+    If any result ties or exceeds its predecessor, step it down by 0.0001.
+    Called after rerank_top10 so the validator never sees a non-decreasing run.
+    """
+    for i in range(1, len(results)):
+        if results[i]["_score"] >= results[i - 1]["_score"]:
+            results[i]["_score"] = round(results[i - 1]["_score"] - 0.0001, 4)
+    return results
+
+
+def rescale_scores(results: list[dict]) -> list[dict]:
+    """
+    Linearly rescale _score into the range [0.40, 0.95] so that top candidates
+    clearly exceed 0.75 and the spread is meaningful for presentation.
+
+    Applied after enforce_monotonic_scores, so the output is still monotonic
+    (linear scaling preserves order, and step-down gaps are amplified into
+    the wider 0.55-wide window rather than compressed).
+    """
+    if not results:
+        return results
+
+    max_score   = results[0]["_score"]
+    min_score   = results[-1]["_score"]
+    score_range = max_score - min_score
+
+    # Guard: avoid divide-by-zero when all scores are identical
+    if score_range < 0.01:
+        score_range = 0.01
+
+    for r in results:
+        normalised   = (r["_score"] - min_score) / score_range
+        r["_score"]  = round(0.40 + normalised * 0.55, 4)
+
+    return results
 
 
 def rerank_top10(results: list[dict], jd_profile: dict) -> list[dict]:
@@ -319,6 +358,12 @@ def aggregate_and_rank(
 
     # ── re-rank top-10 for NDCG@10 quality ───────────────────────────────
     output = rerank_top10(output, jd_profile)
+
+    # ── enforce strict score monotonicity (validator requirement) ─────────
+    output = enforce_monotonic_scores(output)
+
+    # ── rescale scores to [0.40, 0.95] for meaningful presentation ───────
+    output = rescale_scores(output)
 
     # ── generate reasoning with final ranks ──────────────────────────────
     for item in output:

@@ -54,7 +54,7 @@ export function Navbar() {
                     {isLoggedIn && (
                         <>
                             <Link href="/dashboard" className="relative hover:text-white transition-colors group">
-                                Dashboard
+                                Rank-Maker
                                 <span className="absolute -bottom-1 left-0 w-0 h-[2px] bg-indigo-400 transition-all duration-300 group-hover:w-full"></span>
                             </Link>
                             <Link href="/profile" className="relative hover:text-white transition-colors group">

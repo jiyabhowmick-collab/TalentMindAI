@@ -6,62 +6,60 @@ import { Footer } from "@/components/footer";
 import { BGPattern } from "@/components/ui/bg-pattern";
 import { UploadSection } from "@/components/UploadSection";
 import { JobDescriptionInput } from "@/components/JobDescriptionInput";
-import { ProgressTracker, Stage } from "@/components/ProgressTracker";
+import { ProgressTracker } from "@/components/ProgressTracker";
 import { ResultsTable } from "@/components/ResultsTable";
 import { ExportButtons } from "@/components/ExportButtons";
+import { SkeletonResults } from "@/components/SkeletonResults";
 import { Loader2, Rocket } from "lucide-react";
 import { HoverButton } from "@/components/ui/hover-button";
 import {
-  uploadCandidates,
-  pollResults,
+  uploadAndRank,
   type CandidateResult,
-  type ProgressStatus,
+  type RankStep,
 } from "@/services/api";
 
 export default function DashboardPage() {
-  const [file, setFile] = useState<File | null>(null);
-  const [jd, setJd] = useState("");
-  const [stage, setStage] = useState<Stage>("idle");
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [results, setResults] = useState<CandidateResult[]>([]);
-  const [candidateCount, setCandidateCount] = useState(0);
-  const [errorMessage, setErrorMessage] = useState("");
+  const [file,            setFile]           = useState<File | null>(null);
+  const [jd,              setJd]             = useState("");
+  const [step,            setStep]           = useState<RankStep | -1>(-1);
+  const [jobId,           setJobId]          = useState<string | null>(null);
+  const [results,         setResults]        = useState<CandidateResult[]>([]);
+  const [totalCandidates, setTotalCandidates]= useState(0);
+  const [errorMessage,    setErrorMessage]   = useState("");
+
+  const isRunning = step === 0 || step === 1 || step === 2;
+  const isDone    = step === 3;
+  const isIdle    = step === -1;
 
   const canSubmit =
-    file !== null &&
-    jd.trim().length > 10 &&
-    stage !== "uploading" &&
-    stage !== "processing" &&
-    stage !== "ranking";
+    file !== null && jd.trim().length > 10 && !isRunning;
 
   const handleSubmit = useCallback(async () => {
     if (!file || !jd.trim()) return;
 
-    setStage("uploading");
+    // Reset state
+    setStep(-1);
     setJobId(null);
     setResults([]);
     setErrorMessage("");
+    setTotalCandidates(0);
 
-    try {
-      // 1. Upload file + JD
-      const uploadRes = await uploadCandidates(file, jd.trim());
+    // Small tick so React flushes the reset before starting
+    await new Promise<void>((r) => setTimeout(r, 0));
 
-      setJobId(uploadRes.job_id);
-      setCandidateCount(uploadRes.total_candidates || 0);
-
-      // 2. Poll for results
-      const onProgress = (status: ProgressStatus) => {
-        setStage(status as Stage);
-      };
-
-      const data = await pollResults(uploadRes.job_id, onProgress);
-      setResults(data.results || []);
-      setCandidateCount(data.total_candidates || 0);
-      setStage("done");
-    } catch (err: any) {
-      setStage("error");
-      setErrorMessage(err.message || "Something went wrong.");
-    }
+    await uploadAndRank(file, jd.trim(), {
+      onStepChange:      (s) => setStep(s),
+      onTotalCandidates: (n) => setTotalCandidates(n),
+      onComplete:        (res, total, id) => {
+        setResults(res);
+        setTotalCandidates(total);
+        setJobId(id);
+      },
+      onError: (msg) => {
+        setErrorMessage(msg);
+        setStep(-1);          // back to idle so error message shows
+      },
+    });
   }, [file, jd]);
 
   return (
@@ -77,6 +75,7 @@ export default function DashboardPage() {
 
       <div className="relative z-10 flex-grow pt-24 pb-16 px-4 md:px-6">
         <div className="max-w-4xl mx-auto space-y-8">
+
           {/* Header */}
           <div className="text-center mb-10">
             <h1 className="text-4xl md:text-5xl font-bold text-white tracking-tight">
@@ -91,22 +90,19 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          {/* Upload + JD */}
+          {/* Upload + JD card */}
           <div className="space-y-6 rounded-2xl border border-white/[0.06] bg-white/[0.01] p-6 md:p-8">
             <UploadSection file={file} onFileSelect={setFile} />
             <div className="border-t border-white/[0.05]" />
             <JobDescriptionInput value={jd} onChange={setJd} />
 
-            {/* Submit */}
             <div className="pt-2">
               <HoverButton
                 onClick={handleSubmit}
                 disabled={!canSubmit}
                 className="w-full flex items-center justify-center gap-2"
               >
-                {stage === "uploading" ||
-                stage === "processing" ||
-                stage === "ranking" ? (
+                {isRunning ? (
                   <>
                     <Loader2 className="h-4 w-4 animate-spin inline" />
                     Processing…
@@ -121,27 +117,53 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Progress */}
-          {stage !== "idle" && (
+          {/* Error banner */}
+          {errorMessage && isIdle && (
+            <div className="rounded-2xl border border-red-500/30 bg-red-500/10 px-5 py-4">
+              <p className="text-sm text-red-400">{errorMessage}</p>
+            </div>
+          )}
+
+          {/* Progress stepper */}
+          {step !== -1 && (
             <ProgressTracker
-              stage={stage}
-              candidateCount={candidateCount}
-              errorMessage={errorMessage}
+              step={step as RankStep}
+              totalCandidates={totalCandidates}
             />
           )}
 
-          {/* Results */}
-          {results.length > 0 && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-between">
-                <h2 className="text-xl font-bold text-white">
-                  Ranked Results
-                </h2>
-                {jobId && <ExportButtons jobId={jobId} />}
-              </div>
-              <ResultsTable results={results} />
+          {/* Skeleton / results area */}
+          {step !== -1 && (
+            <div style={{ position: "relative" }}>
+
+              {/* Skeleton — visible while step < 3, fades out when done */}
+              {!isDone && (
+                <SkeletonResults
+                  totalCandidates={totalCandidates}
+                  isDone={false}
+                />
+              )}
+
+              {/* Real results — fade in when done */}
+              {isDone && results.length > 0 && (
+                <div
+                  style={{
+                    animation: "fadeIn 0.5s ease forwards",
+                  }}
+                >
+                  <style>{`@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }`}</style>
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between">
+                      <h2 className="text-xl font-bold text-white">Ranked Results</h2>
+                      {jobId && <ExportButtons jobId={jobId} />}
+                    </div>
+                    <ResultsTable results={results} />
+                  </div>
+                </div>
+              )}
             </div>
           )}
+
         </div>
       </div>
 
