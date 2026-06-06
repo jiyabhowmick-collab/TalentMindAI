@@ -99,21 +99,6 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
         const jdText = req.body.job_description || "";
         const firstLine = jdText.split("\n").map(l => l.trim()).find(l => l.length > 0) || "Untitled Job";
 
-        // Fetch all 3 CSV tiers from Flask while it still has the job cached
-        const csvData = {};
-        for (const tier of [10, 50, 100]) {
-          try {
-            const csvRes = await axios.get(`${PYTHON_URL}/export/${jobId}/${tier}`, {
-              responseType: "text",
-              timeout: 30000,
-            });
-            csvData[`csvTop${tier}`] = csvRes.data;
-          } catch (csvErr) {
-            console.warn(`[upload] Failed to fetch CSV tier ${tier}:`, csvErr.message);
-            csvData[`csvTop${tier}`] = "";
-          }
-        }
-
         await RankingHistory.findOneAndUpdate(
           { userId, jobId },
           {
@@ -124,11 +109,10 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
             totalCandidates: response.data.total_candidates || 0,
             returnedCandidates: response.data.returned || 0,
             fileName: req.file.originalname || "",
-            ...csvData,
           },
-          { upsert: true, new: true, setDefaultsOnInsert: true }
+          { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
         );
-        console.log(`[upload] Saved ranking history + CSVs for user ${userId}`);
+        console.log(`[upload] Saved ranking history skeleton for user ${userId}`);
       }
     } catch (historyErr) {
       // Non-blocking: don't fail the upload if history save fails
@@ -147,9 +131,40 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 // Poll ranked results by job ID
 app.get("/api/results/:jobId", async (req, res) => {
   try {
-    console.log(`[results] Fetching job ${req.params.jobId}`);
-    const response = await axios.get(`${PYTHON_URL}/results/${req.params.jobId}`);
-    console.log(`[results] job=${req.params.jobId} returned=${response.data.returned}`);
+    const jobId = req.params.jobId;
+    console.log(`[results] Fetching job ${jobId}`);
+    const response = await axios.get(`${PYTHON_URL}/results/${jobId}`);
+    console.log(`[results] job=${jobId} returned=${response.data.returned}`);
+
+    // Automatically fetch and save the resulting CSVs to the user's MongoDB profile
+    try {
+      const csvData = {};
+      for (const tier of [10, 50, 100]) {
+        try {
+          const csvRes = await axios.get(`${PYTHON_URL}/export/${jobId}/${tier}`, {
+            responseType: "text",
+            timeout: 30000,
+          });
+          csvData[`csvTop${tier}`] = csvRes.data;
+        } catch (csvErr) {
+          console.warn(`[results] Failed to fetch CSV tier ${tier}:`, csvErr.message);
+        }
+      }
+
+      await RankingHistory.findOneAndUpdate(
+        { jobId },
+        {
+          totalCandidates: response.data.total_candidates || 0,
+          returnedCandidates: response.data.returned || 0,
+          ...csvData,
+        },
+        { returnDocument: 'after' }
+      );
+      console.log(`[results] Saved ranking history + CSVs for job ${jobId}`);
+    } catch (historyErr) {
+      console.warn(`[results] Failed to save history/CSVs:`, historyErr.message);
+    }
+
     res.json(response.data);
   } catch (err) {
     const status = err.response?.status || 404;
