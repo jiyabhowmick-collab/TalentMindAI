@@ -9,8 +9,10 @@ interface CandidateResult {
   _semantic_score: number;
   _behavioral_score: number;
   _reasoning: string;
-  name?: string;
-  title?: string;
+  name?: string;           // from profile.anonymized_name (set by Python normalizer)
+  candidate_id?: string;   // always present
+  current_title?: string;  // flat normalized field
+  years_experience?: number;
   [key: string]: unknown;
 }
 
@@ -98,7 +100,7 @@ export function ResultsTable({ results }: ResultsTableProps) {
 
                   {/* Name */}
                   <span className="text-sm text-white/90 truncate">
-                    {c.name || c.title || `Candidate ${c._rank}`}
+                    {c.name || c.candidate_id || `Candidate ${c._rank}`}
                   </span>
 
                   {/* Score bar */}

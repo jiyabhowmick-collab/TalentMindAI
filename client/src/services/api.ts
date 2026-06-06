@@ -31,8 +31,10 @@ export interface CandidateResult {
   _semantic_score: number;
   _behavioral_score: number;
   _reasoning: string;
-  name?: string;
-  title?: string;
+  name?: string;           // from profile.anonymized_name
+  candidate_id?: string;   // always present
+  current_title?: string;  // flat normalized field
+  years_experience?: number;
   [key: string]: unknown;
 }
 
@@ -201,6 +203,16 @@ export async function pollResults(
       const data: ResultsResponse = await res.json();
 
       if (data.results && data.results.length > 0) {
+        // Debug: log first result to verify field names from the API
+        console.log("[pollResults] First result keys:", Object.keys(data.results[0]));
+        console.log("[pollResults] First result sample:", {
+          name: data.results[0].name,
+          candidate_id: data.results[0].candidate_id,
+          current_title: data.results[0].current_title,
+          _rank: data.results[0]._rank,
+          _score: data.results[0]._score,
+          _reasoning: data.results[0]._reasoning,
+        });
         onProgress("done", data);
         return data;
       }
