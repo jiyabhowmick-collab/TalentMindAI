@@ -29,6 +29,7 @@ interface ProfileData {
   githubUrl: string;
   portfolio: string;
   bio: string;
+  avatar?: string;
 }
 
 const FIELDS: {
